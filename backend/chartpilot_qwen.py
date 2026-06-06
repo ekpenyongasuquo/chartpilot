@@ -1,32 +1,39 @@
 """
-qwen_agent.py — Qwen-Max intent parsing and clinical summarization
+chartpilot_qwen.py — Qwen-Max intent parsing and clinical summarization
 
 Two responsibilities:
-  1. parse_query_intent()  → Understand doctor's NL query → generate SQL
-  2. summarize_results()   → Turn raw DB rows → clean clinical summary
+  1. parse_query_intent()  -> Understand doctor's NL query -> generate SQL
+  2. summarize_results()   -> Turn raw DB rows -> clean clinical summary
 
-Uses DashScope API (OpenAI-compatible endpoint) with Qwen-Max model.
+Uses DashScope International API (OpenAI-compatible endpoint) with Qwen-Max model.
 """
 import os
+import sys
 import json
 import logging
+
+_BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+if _BACKEND_DIR not in sys.path:
+    sys.path.insert(0, _BACKEND_DIR)
+
 from openai import OpenAI
 from hmis_adapter import HMIS_SCHEMA_DESCRIPTION
 
 logger = logging.getLogger(__name__)
 
-# DashScope is OpenAI-compatible — just swap the base_url
-def _get_client():
-    api_key = os.getenv("DASHSCOPE_API_KEY", "placeholder")
-    return OpenAI(
-        api_key=api_key,
-        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-    )
-
 QWEN_MODEL = "qwen-max"
 
 
-# ── Intent Parsing ───────────────────────────────────────────────────────────
+def _get_client() -> OpenAI:
+    """Create a fresh OpenAI-compatible client pointing at DashScope International."""
+    api_key = os.getenv("DASHSCOPE_API_KEY", "placeholder")
+    return OpenAI(
+        api_key=api_key,
+        base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+    )
+
+
+# ── Intent Parsing ────────────────────────────────────────────────────────────
 
 INTENT_SYSTEM_PROMPT = f"""You are ChartPilot's query interpreter for a Nigerian Federal Medical Centre HMIS.
 
@@ -35,7 +42,7 @@ Your job: Convert a doctor's natural language query into a safe, read-only SQL S
 {HMIS_SCHEMA_DESCRIPTION}
 
 IMPORTANT CONTEXT — Nigerian clinical language:
-- Doctors may use abbreviations: RDT (Rapid Diagnostic Test), FBC (Full Blood Count), 
+- Doctors may use abbreviations: RDT (Rapid Diagnostic Test), FBC (Full Blood Count),
   BP (Blood Pressure), ANC (Antenatal Care), OPD (Outpatient Department),
   Hb (Haemoglobin), PCV (Packed Cell Volume), USS (Ultrasound Scan)
 - Doctors may refer to patients by first name only, nickname, or partial name
@@ -66,13 +73,13 @@ def parse_query_intent(query: str) -> dict:
                             requires_confirmation, confirmation_reason
     """
     try:
-        response = client.chat.completions.create(
+        response = _get_client().chat.completions.create(
             model=QWEN_MODEL,
             messages=[
                 {"role": "system", "content": INTENT_SYSTEM_PROMPT},
                 {"role": "user", "content": query},
             ],
-            temperature=0.1,   # Low temperature for consistent SQL generation
+            temperature=0.1,
             max_tokens=600,
         )
 
@@ -101,11 +108,11 @@ def parse_query_intent(query: str) -> dict:
         raise
 
 
-# ── Result Summarization ─────────────────────────────────────────────────────
+# ── Result Summarization ──────────────────────────────────────────────────────
 
 SUMMARY_SYSTEM_PROMPT = """You are ChartPilot's clinical summarizer for a Nigerian Federal Medical Centre.
 
-Given raw database records and the original query, produce a concise, clinically useful summary 
+Given raw database records and the original query, produce a concise, clinically useful summary
 that a busy doctor can read in 10 seconds.
 
 RULES:
@@ -122,7 +129,7 @@ Respond with ONLY the summary text. No preamble, no JSON.
 """
 
 
-def summarize_results(query: str, records: list[dict], understood_as: str) -> str:
+def summarize_results(query: str, records: list, understood_as: str) -> str:
     """
     Generate a concise clinical summary from raw HMIS records.
     """
@@ -132,7 +139,7 @@ def summarize_results(query: str, records: list[dict], understood_as: str) -> st
     try:
         records_text = json.dumps(records, indent=2, default=str)
 
-        response = client.chat.completions.create(
+        response = _get_client().chat.completions.create(
             model=QWEN_MODEL,
             messages=[
                 {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
@@ -149,14 +156,13 @@ def summarize_results(query: str, records: list[dict], understood_as: str) -> st
 
     except Exception as e:
         logger.error(f"Qwen API error in summarize_results: {e}")
-        # Graceful fallback — return raw record count
         return f"Retrieved {len(records)} record(s). Summary unavailable — please review raw data."
 
 
 def check_qwen_connection() -> bool:
     """Ping Qwen API to verify connectivity."""
     try:
-        response = client.chat.completions.create(
+        _get_client().chat.completions.create(
             model=QWEN_MODEL,
             messages=[{"role": "user", "content": "ping"}],
             max_tokens=5,
